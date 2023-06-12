@@ -1,6 +1,6 @@
 # coding: utf-8
-
 import datetime
+import time
 import requests
 import re
 import os
@@ -9,13 +9,40 @@ import codecs
 import json
 from multiprocessing import cpu_count
 from concurrent.futures import ThreadPoolExecutor
-from tqdm import tqdm
 
 download_status_json = ''
 download_status_dict = {}
 DOWNLOAD_DIVIDE_SIZE_1M = 1024 * 1000
 DOWNLOAD_DIVIDE_SIZE_10M = DOWNLOAD_DIVIDE_SIZE_1M * 10
 DOWNLOAD_DIVIDE_SIZE_100M = DOWNLOAD_DIVIDE_SIZE_10M * 10
+
+
+class ProgressBar(object):
+    def __init__(self, size_total, size_download=0):
+        self.size_total = size_total
+        self.size_download = size_download
+        self.time_start = time.time()
+        self.update()
+
+    def update(self, size_add: int = 0):
+        self.size_download += size_add
+        percentage = self.size_download * 100 / self.size_total
+        time_delta = time.time() - self.time_start
+        if time_delta:
+            speed_mb = self.size_download / 1024 / 1024 / time_delta
+            speed_kb = self.size_download / 1024 / time_delta
+            speed_b = self.size_download / time_delta
+            if speed_mb > 1:
+                speed = f"{speed_mb:.2f} MB/s"
+            elif speed_kb > 1:
+                speed = f"{speed_kb:.2f} KB/s"
+            else:
+                speed = f"{speed_b:.2f} B/s"
+        else:
+            speed = f"{0:.2f} B/s"
+        print(f"\r>>>>> progress: {percentage:.2f}%, speed: {speed} >>>>>", end='')
+        if percentage == 100:
+            print("")
 
 
 def get_time():
@@ -60,16 +87,23 @@ def size_split(file_size, divide_num):
     return result
 
 
-def write_data(session_share, url, index, start, end, length, download_size, divide_size, file_w, file_w_lock, pbar, callback_func):
+def write_data(session_share, url, index, start, end, length, download_size, file_w, file_w_lock, pbar, callback_func):
     info = {}
-    divide_cnt = (length - download_size - 1) // divide_size + 1 if length > 0 else 1
+    rest_size = length - download_size
+    if rest_size / DOWNLOAD_DIVIDE_SIZE_100M > 10:
+        divide_size = DOWNLOAD_DIVIDE_SIZE_100M
+    elif rest_size / DOWNLOAD_DIVIDE_SIZE_10M > 10:
+        divide_size = DOWNLOAD_DIVIDE_SIZE_10M
+    else:
+        divide_size = DOWNLOAD_DIVIDE_SIZE_1M
+    divide_cnt = (rest_size - 1) // divide_size + 1 if length > 0 else 1
     for cnt in range(divide_cnt):
         if length <= 0:
             headers_range = {'Range': f'bytes={start + download_size}-'}
         elif cnt != divide_cnt - 1:
-            headers_range = {'Range': f'bytes={start+download_size}-{start+download_size+divide_size-1}'}
+            headers_range = {'Range': f'bytes={start + download_size}-{start + download_size + divide_size - 1}'}
         else:
-            headers_range = {'Range': f'bytes={start+download_size}-{end}'}
+            headers_range = {'Range': f'bytes={start + download_size}-{end}'}
         res = session_share.get(url, headers=headers_range)
         file_w_lock.acquire()
         file_w.seek(start + download_size)
@@ -116,15 +150,10 @@ def download_split_data(session_share, url, index, download_info, file_w, file_w
     start = download_info["data_start"]
     end = download_info["data_end"]
     length = download_info["data_length"]
-    if length / DOWNLOAD_DIVIDE_SIZE_100M > 100:
-        divide_size = DOWNLOAD_DIVIDE_SIZE_100M
-    elif length / DOWNLOAD_DIVIDE_SIZE_10M > 10:
-        divide_size = DOWNLOAD_DIVIDE_SIZE_10M
-    else:
-        divide_size = DOWNLOAD_DIVIDE_SIZE_1M
     download_size = 0 if not download_info.get("download_total") else download_info["download_total"]
     if download_size < length:
-        write_data(session_share, url, index, start, end, length, download_size, divide_size, file_w, file_w_lock, pbar, callback_func)
+        write_data(session_share, url, index, start, end, length, download_size, file_w, file_w_lock, pbar,
+                   callback_func)
 
 
 def download(url, save_file_path=None, session=None):
@@ -196,14 +225,13 @@ def download(url, save_file_path=None, session=None):
             downloaded_size += download_status_dict["thread_status"][str(index)]["download_total"]
 
     file_w_lock = threading.Lock()
-    with tqdm(total=file_size, unit="B", unit_scale=True, unit_divisor=1024, desc=file_name,
-              initial=downloaded_size) as pbar:
-        with ThreadPoolExecutor(max_workers=cpu_max_thread_cnt*3//4) as executor:
-            for index in range(thread_cnt):
-                download_info = download_status_dict["thread_status"][str(index)]
-                executor.submit(download_split_data, session, url, index, download_info, file_w, file_w_lock, pbar, write_status)
+    pbar = ProgressBar(file_size, downloaded_size)
+    with ThreadPoolExecutor(max_workers=cpu_max_thread_cnt * 3 // 4) as executor:
+        for index in range(thread_cnt):
+            download_info = download_status_dict["thread_status"][str(index)]
+            executor.submit(download_split_data, session, url, index, download_info, file_w, file_w_lock, pbar,
+                            write_status)
     file_w.close()
     os.rename(file_name_tmp, file_name)
     os.remove(download_status_json)
     pretty_print(f"{file_name} download complete.")
-
