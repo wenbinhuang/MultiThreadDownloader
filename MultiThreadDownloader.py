@@ -74,10 +74,10 @@ def write_data(session_share, url, index, start, end, length, download_size, div
         file_w_lock.acquire()
         file_w.seek(start + download_size)
         file_w.write(res.content)
+        file_w.flush()
         size = len(res.content)
         download_size += size
         pbar.update(size)
-        file_w.flush()
         info["download_total"] = download_size
         callback_func(index, info)
         file_w_lock.release()
