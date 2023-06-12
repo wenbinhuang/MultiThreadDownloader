@@ -13,6 +13,9 @@ from tqdm import tqdm
 
 download_status_json = ''
 download_status_dict = {}
+DOWNLOAD_DIVIDE_SIZE_1M = 1024 * 1000
+DOWNLOAD_DIVIDE_SIZE_10M = DOWNLOAD_DIVIDE_SIZE_1M * 10
+DOWNLOAD_DIVIDE_SIZE_100M = DOWNLOAD_DIVIDE_SIZE_10M * 10
 
 
 def get_time():
@@ -57,17 +60,24 @@ def size_split(file_size, divide_num):
     return result
 
 
-def write_data(res, index, start, download_size, file_w, file_w_lock, pbar, callback_func):
-    chunk_size = 100000
+def write_data(session_share, url, index, start, end, length, download_size, divide_size, file_w, file_w_lock, pbar, callback_func):
     info = {}
-    for data in res.iter_content(chunk_size=chunk_size):
+    divide_cnt = (length - download_size - 1) // divide_size + 1 if length > 0 else 1
+    for cnt in range(divide_cnt):
+        if length <= 0:
+            headers_range = {'Range': f'bytes={start + download_size}-'}
+        elif cnt != divide_cnt - 1:
+            headers_range = {'Range': f'bytes={start+download_size}-{start+download_size+divide_size-1}'}
+        else:
+            headers_range = {'Range': f'bytes={start+download_size}-{end}'}
+        res = session_share.get(url, headers=headers_range)
         file_w_lock.acquire()
         file_w.seek(start + download_size)
-        file_w.write(data)
-        size = len(data)
+        file_w.write(res.content)
+        size = len(res.content)
         download_size += size
-        file_w.flush()
         pbar.update(size)
+        file_w.flush()
         info["download_total"] = download_size
         callback_func(index, info)
         file_w_lock.release()
@@ -106,17 +116,18 @@ def download_split_data(session_share, url, index, download_info, file_w, file_w
     start = download_info["data_start"]
     end = download_info["data_end"]
     length = download_info["data_length"]
+    if length / DOWNLOAD_DIVIDE_SIZE_100M > 100:
+        divide_size = DOWNLOAD_DIVIDE_SIZE_100M
+    elif length / DOWNLOAD_DIVIDE_SIZE_10M > 10:
+        divide_size = DOWNLOAD_DIVIDE_SIZE_10M
+    else:
+        divide_size = DOWNLOAD_DIVIDE_SIZE_1M
     download_size = 0 if not download_info.get("download_total") else download_info["download_total"]
     if download_size < length:
-        if length:
-            headers_range = {'Range': f'bytes={start + download_size}-{end}'}
-            res = session_share.get(url, headers=headers_range, stream=True)
-        else:
-            res = session_share.get(url, stream=True)
-        write_data(res, index, start, download_size, file_w, file_w_lock, pbar, callback_func)
+        write_data(session_share, url, index, start, end, length, download_size, divide_size, file_w, file_w_lock, pbar, callback_func)
 
 
-def download(url, save_file_path=None, session=None, thread_cnt=2):
+def download(url, save_file_path=None, session=None):
     global download_status_json
     global download_status_dict
     cpu_max_thread_cnt = cpu_count()
@@ -159,10 +170,8 @@ def download(url, save_file_path=None, session=None, thread_cnt=2):
         if file_size > 0:
             file_w.seek(file_size - 1)
             file_w.write(b'\0')
-            tmp_thread_cnt = file_size // (1024 * 1024) + 1
             # max multi-thread: x
-            if thread_cnt < tmp_thread_cnt:
-                thread_cnt = tmp_thread_cnt
+            thread_cnt = cpu_max_thread_cnt * 3
         else:
             # single-thread: 1
             thread_cnt = 1
@@ -189,7 +198,7 @@ def download(url, save_file_path=None, session=None, thread_cnt=2):
     file_w_lock = threading.Lock()
     with tqdm(total=file_size, unit="B", unit_scale=True, unit_divisor=1024, desc=file_name,
               initial=downloaded_size) as pbar:
-        with ThreadPoolExecutor(max_workers=cpu_max_thread_cnt) as executor:
+        with ThreadPoolExecutor(max_workers=cpu_max_thread_cnt*3//4) as executor:
             for index in range(thread_cnt):
                 download_info = download_status_dict["thread_status"][str(index)]
                 executor.submit(download_split_data, session, url, index, download_info, file_w, file_w_lock, pbar, write_status)
