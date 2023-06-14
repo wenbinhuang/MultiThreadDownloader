@@ -40,27 +40,36 @@ class ProgressBar(object):
             speed_kb = download_kb / time_delta
             speed_mb = download_mb / time_delta
             if download_mb > 1:
-                size = f"{download_mb:.2f} MB"
+                d_size = f"{download_mb:.2f} MB"
             elif download_kb > 1:
-                size = f"{download_kb:.2f} MB"
+                d_size = f"{download_kb:.2f} KB"
             else:
-                size = f"{download_b:.2f} MB"
+                d_size = f"{download_b:.2f} B"
             if speed_mb > 1:
-                speed = f"{speed_mb:.2f} MB/s"
+                d_speed = f"{speed_mb:.2f} MB/s"
             elif speed_kb > 1:
-                speed = f"{speed_kb:.2f} KB/s"
+                d_speed = f"{speed_kb:.2f} KB/s"
             else:
-                speed = f"{speed_b:.2f} B/s"
+                d_speed = f"{speed_b:.2f} B/s"
         else:
-            speed = f"{0:.2f} B/s"
-            size = f"{0:.2f} B"
+            d_speed = f"{0:.2f} B/s"
+            d_size = f"{0:.2f} B"
 
         if self.size_total:
-            print(f"\r>>>>> progress: {percentage:.2f}%, download: {size}%, speed: {speed} >>>>>", end='')
+            total_b = self.size_total
+            total_kb = total_b / 1024
+            total_mb = total_kb / 1024
+            if total_mb > 1:
+                t_size = f"{total_mb:.2f} MB"
+            elif total_kb > 1:
+                t_size = f"{total_kb:.2f} KB"
+            else:
+                t_size = f"{total_b:.2f} B"
+            print(f"\r>>>>> total: {t_size}, progress: {percentage:.2f}%, download: {d_size}, speed: {d_speed} >>>>>", end='')
             if percentage == 100:
                 print("")
         else:
-            print(f"\r>>>>> download: {size}%, speed: {speed} >>>>>", end='')
+            print(f"\r>>>>> download: {d_size}, speed: {d_speed} >>>>>", end='')
 
 
 def get_time():
@@ -158,14 +167,14 @@ def get_response_data(session_share, url, headers_range, stream_flag=False):
     return None
 
 
-def write_data(data, index, start, download_size, file_w, file_w_lock, pbar, callback_func):
+def write_data(data, index, start, download_size, file_w, file_w_lock, process_bar, callback_func):
     file_w_lock.acquire()
     file_w.seek(start + download_size)
     file_w.write(data)
     file_w.flush()
     size = len(data)
     download_size += size
-    pbar.update(size)
+    process_bar.update(size)
     callback_func(index, {"download_total": download_size})
     file_w_lock.release()
     return download_size
@@ -177,7 +186,7 @@ def write_data_stream(res, index, start, download_size, file_w, file_w_lock, pba
             write_data(data, index, start, download_size, file_w, file_w_lock, pbar, callback_func)
 
 
-def download_split_data(session_share, url, index, download_info, file_w, file_w_lock, pbar, callback_func):
+def download_split_data(session_share, url, index, download_info, file_w, file_w_lock, process_bar, callback_func):
     start = download_info["data_start"]
     end = download_info["data_end"]
     length = download_info["data_length"]
@@ -185,7 +194,7 @@ def download_split_data(session_share, url, index, download_info, file_w, file_w
     if length == 0:
         headers_range = {'Range': f'bytes={start + download_size}-'}
         res = get_response_data(session_share, url, headers_range, stream_flag=True)
-        write_data_stream(res, index, start, download_size, file_w, file_w_lock, pbar, callback_func)
+        write_data_stream(res, index, start, download_size, file_w, file_w_lock, process_bar, callback_func)
     elif length > download_size:
         rest_size = length - download_size
         divide_size = get_download_block_size(rest_size)
@@ -196,8 +205,36 @@ def download_split_data(session_share, url, index, download_info, file_w, file_w
             else:
                 headers_range = {'Range': f'bytes={start + download_size}-{end}'}
             res = get_response_data(session_share, url, headers_range, stream_flag=False)
-            download_size = write_data(res.content, index, start, download_size, file_w, file_w_lock, pbar,
+            download_size = write_data(res.content, index, start, download_size, file_w, file_w_lock, process_bar,
                                        callback_func)
+
+
+def get_last_download_status(file_name, file_name_tmp, file_name_json):
+    global download_status_dict
+    download_status_dict = {}
+    if not os.path.exists(file_name):
+        if os.path.exists(file_name_tmp):
+            if os.path.exists(file_name_json):
+                try:
+                    with codecs.open(file_name_json, 'r', 'utf-8') as f:
+                        download_status_dict = json.load(f)
+                except:
+                    download_status = 0
+                else:
+                    if check_finish():
+                        download_status = 2
+                        pretty_print(f"{file_name}, already have downloaded.")
+                    else:
+                        pretty_print(f"{file_name}, downloaded un-complete last time.")
+                        download_status = 1
+            else:
+                download_status = 0
+        else:
+            download_status = 0
+    else:
+        download_status = 3
+        pretty_print(f"{file_name}, already have downloaded.")
+    return download_status
 
 
 def download(url, save_file_path=None, session=None):
@@ -206,40 +243,13 @@ def download(url, save_file_path=None, session=None):
     cpu_max_thread_cnt = cpu_count()
     file_name = url.split('/')[-1] if save_file_path is None else save_file_path
     file_name_tmp = f"{file_name}.tmp"
-    download_status_dict = {}
     download_status_json = f"{file_name}.json"
     session = requests.session() if session is None else session
     file_size = get_file_size(session, url)
-    if not os.path.exists(file_name):
-        if os.path.exists(file_name_tmp):
-            if os.path.exists(download_status_json):
-                try:
-                    with codecs.open(download_status_json, 'r', 'utf-8') as f:
-                        download_status_dict = json.load(f)
-                except:
-                    os.remove(file_name_tmp)
-                    os.remove(download_status_json)
-                    download_status = 0
-                else:
-                    if check_change(file_size):
-                        download_status = 0
-                    elif check_finish():
-                        download_status = 2
-                        pretty_print(f"{file_name}, already have downloaded.")
-                    else:
-                        pretty_print(f"{file_name}, downloaded un-complete last time.")
-                        download_status = 1
-            else:
-                os.remove(file_name_tmp)
-                download_status = 0
-        else:
-            download_status = 0
-    else:
-        # download_status = 3
-        pretty_print(f"{file_name}, already have downloaded.")
+    download_status = get_last_download_status(file_name, file_name_tmp, download_status_json)
+    if download_status == 3:
         return
     pretty_print(f"{file_name}, download now.")
-
     downloaded_size = 0
     if download_status == 0:
         file_w = open(f"{file_name_tmp}", 'wb')
@@ -271,11 +281,11 @@ def download(url, save_file_path=None, session=None):
         for index in range(thread_cnt):
             downloaded_size += download_status_dict["thread_status"][str(index)]["download_total"]
     file_w_lock = threading.Lock()
-    pbar = ProgressBar(file_size, downloaded_size)
+    process_bar = ProgressBar(file_size, downloaded_size)
     with ThreadPoolExecutor(max_workers=cpu_max_thread_cnt) as executor:
         for index in range(thread_cnt):
             download_info = download_status_dict["thread_status"][str(index)]
-            executor.submit(download_split_data, session, url, index, download_info, file_w, file_w_lock, pbar,
+            executor.submit(download_split_data, session, url, index, download_info, file_w, file_w_lock, process_bar,
                             write_status)
     file_w.close()
     os.rename(file_name_tmp, file_name)
