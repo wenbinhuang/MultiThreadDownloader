@@ -104,27 +104,18 @@ def get_file_size(session, url):
     return file_size
 
 
-def size_split(file_size, divide_num):
-    average = file_size // divide_num
-    result = []
-    if file_size:
+def split_file(file_size, divide_num):
+    sp_list = []
+    if file_size > 0 and divide_num > 0:
+        average = file_size // divide_num
         for i in range(divide_num):
             if i != divide_num - 1:
-                result.append((average * i, average * (i + 1) - 1, average))
+                sp_list.append((average * i, average * (i + 1) - 1, average))
             else:
-                result.append((average * i, file_size - 1, average + file_size % divide_num))
+                sp_list.append((average * i, file_size - 1, average + file_size % divide_num))
     else:
-        result.append((0, 0, 0))
-    return result
-
-
-def write_status(index, info):
-    global download_status_json
-    global download_status_dict
-    download_status_dict["thread_status"][str(index)].update(info)
-    with open(download_status_json, 'w') as f:
-        json.dump(download_status_dict, f, indent=4)
-        f.flush()
+        sp_list.append((0, 0, 0))
+    return sp_list
 
 
 def check_change(file_size):
@@ -165,6 +156,15 @@ def get_response_data(session_share, url, headers_range, stream_flag=False):
         except:
             continue
     return None
+
+
+def write_status(index, info):
+    global download_status_json
+    global download_status_dict
+    download_status_dict["thread_status"][str(index)].update(info)
+    with open(download_status_json, 'w') as f:
+        json.dump(download_status_dict, f, indent=4)
+        f.flush()
 
 
 def write_data(data, index, start, download_size, file_w, file_w_lock, process_bar, callback_func):
@@ -240,15 +240,15 @@ def get_last_download_status(file_name, file_name_tmp, file_name_json):
 def download(url, save_file_path=None, session=None):
     global download_status_json
     global download_status_dict
-    cpu_max_thread_cnt = cpu_count()
     file_name = url.split('/')[-1] if save_file_path is None else save_file_path
     file_name_tmp = f"{file_name}.tmp"
     download_status_json = f"{file_name}.json"
-    session = requests.session() if session is None else session
-    file_size = get_file_size(session, url)
     download_status = get_last_download_status(file_name, file_name_tmp, download_status_json)
     if download_status == 3:
         return
+    cpu_max_thread_cnt = cpu_count()
+    session = requests.session() if session is None else session
+    file_size = get_file_size(session, url)
     pretty_print(f"{file_name}, download now.")
     downloaded_size = 0
     if download_status == 0:
@@ -267,8 +267,8 @@ def download(url, save_file_path=None, session=None):
         download_status_dict["file_size"] = file_size
         download_status_dict["thread_cnt"] = thread_cnt
         download_status_dict["thread_status"] = {}
-        size_sp_list = size_split(file_size, thread_cnt)
-        for index, size_sp in enumerate(size_sp_list):
+        split_file_size_list = split_file(file_size, thread_cnt)
+        for index, size_sp in enumerate(split_file_size_list):
             start_index, end_index, length = size_sp
             download_status_dict["thread_status"][str(index)] = {}
             download_status_dict["thread_status"][str(index)]["data_start"] = start_index
@@ -277,9 +277,9 @@ def download(url, save_file_path=None, session=None):
             download_status_dict["thread_status"][str(index)]["download_total"] = 0
     else:
         thread_cnt = download_status_dict["thread_cnt"]
-        file_w = open(f"{file_name_tmp}", 'rb+')
         for index in range(thread_cnt):
             downloaded_size += download_status_dict["thread_status"][str(index)]["download_total"]
+        file_w = open(f"{file_name_tmp}", 'rb+')
     file_w_lock = threading.Lock()
     process_bar = ProgressBar(file_size, downloaded_size)
     with ThreadPoolExecutor(max_workers=cpu_max_thread_cnt) as executor:
