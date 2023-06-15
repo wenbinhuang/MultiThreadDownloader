@@ -19,7 +19,7 @@ REQUEST_RETRY_MAX = 9
 
 
 class ProgressBar(object):
-    def __init__(self, size_total, size_download=0):
+    def __init__(self, size_total: int = 0, size_download: int = 0):
         self.size_total = size_total
         self.size_download = size_download
         self.time_start = time.time()
@@ -27,10 +27,6 @@ class ProgressBar(object):
 
     def update(self, size_add: int = 0):
         self.size_download += size_add
-        if self.size_total:
-            percentage = 100 * self.size_download / self.size_total
-        else:
-            percentage = 0
         time_delta = time.time() - self.time_start
         if time_delta:
             download_b = self.size_download
@@ -65,6 +61,7 @@ class ProgressBar(object):
                 t_size = f"{total_kb:.2f} KB"
             else:
                 t_size = f"{total_b:.2f} B"
+            percentage = 100 * self.size_download / self.size_total
             print(f"\r>>>>> total: {t_size}, progress: {percentage:.2f}%, download: {d_size}, speed: {d_speed} >>>>>", end='')
             if percentage == 100:
                 print("")
